@@ -1,0 +1,842 @@
+Task 1 code begin
+
+mapper.py code begin
+
+#!/usr/bin/python
+import sys
+import os
+
+#something like hdfs://macallan.inf.ed.ac.uk:8020/data/incredibly/long/path/d1.txt
+raw_file_name = os.environ["mapreduce_map_input_file"]
+#d1.txt
+file_name = raw_file_name.split("/")[-1]
+
+for line in sys.stdin:
+    #splitting by the space as everything separated by them is a word
+    #for example, this is three terms: got,--lace, "Ryder," Luck"--or
+    #remove any whitespace characters as well
+    terms = line.split()
+    for term in terms:
+        #ensure json formatting
+        freq_json = '{{"{0}": 1}}'.format(file_name)
+        print '{0}\t{1}'.format(term, freq_json)
+mapper.py code end
+
+combiner.py code begin
+
+#!/usr/bin/python
+import sys
+import json
+from collections import Counter
+
+#There is no point of using sys.stdout.write because
+#on the reducer side we have to count number of documents where each term occurs
+#AND OUTPUT IT RIGHT AFTER THE TERM.
+#The would be sence to use sys.stdout.write if the format was like this:
+#cat : {(d1.txt, 2), (d2.txt, 3)} : 2
+#instead of this:
+#cat : 2 : {(d1.txt, 2), (d2.txt, 3)}
+#THERE IS ONLY 17 FILES so we can store 17 counts in RAM easily
+#And I use second map reduce job to sort it alphabetically by term, so
+#at some point entire string will be stored in RAM.
+
+#The Bottleneck of the performance will be the number of documents
+#(not size of the documents). but taking into consideration that
+# the HADOOP block size (128mb or 64mb) we will have to
+#combine many small documents into on several corpuses.
+
+#I am using counter and json
+#as I don't know whether I encounter reduce-side combiner or not
+current_term = None
+current_term_counter = Counter()
+
+def print_current_counter():
+    if len(current_term_counter) > 0:
+        #produce something like:
+        # {"d1.txt": 5, "d2.txt": 8}
+        freqs_json = json.dumps(current_term_counter)
+        print "{0}\t{1}".format(current_term, freqs_json)
+
+for line in sys.stdin:
+    #freqs_json -> frequencies like  {"d1.txt": 5, "d2.txt": 8}
+    term, freqs_json = line.split("\t", 1)
+    #assume that we have only ascii anyway
+    #so u'cat' == 'cat'
+    counter = Counter(json.loads(freqs_json))
+
+    if term != current_term:
+        print_current_counter()
+        #clear everything for the next term
+        current_term = term
+        current_term_counter.clear()
+
+    current_term_counter += counter
+
+#print the last term
+print_current_counter()
+combiner.py code end
+
+reducer.py code begin
+
+#!/usr/bin/python
+
+import sys
+import json
+from collections import Counter
+
+#There is no point of using sys.stdout.write because
+#on the reducer side we have to count number of documents where each term occurs
+#AND OUTPUT IT RIGHT AFTER THE TERM.
+#The would be sence to use sys.stdout.write if the format was like this:
+#cat : {(d1.txt, 2), (d2.txt, 3)} : 2
+#instead of this:
+#cat : 2 : {(d1.txt, 2), (d2.txt, 3)}
+#THERE IS ONLY 17 FILES so we can store 17 counts in RAM easily
+#And I use second map reduce job to sort it alphabetically by term, so
+#at some point entire string will be stored in RAM.
+
+#The Bottleneck of the performance will be the number of documents
+#(not size of the documents). but taking into consideration that
+# the HADOOP block size (128mb or 64mb) we will have to
+#combine many small documents into on several corpuses.
+
+current_term = None
+current_term_counter = Counter()
+
+def print_current():
+    if len(current_term_counter) > 0:
+        #ensure alphabetical sorting by file name.
+        #From the task description:
+        #"""
+        #and also that the items inside lists are also
+        #sorted alphabetically by document identifier
+        #"""
+        #So sort file_names as strings like:
+        #horse	: 11 : {(d1.txt, 17), (d10.txt, 10), (d12.txt, 2), (d13.txt, 6), (d15.txt, 3), (d2.txt, 7), (d4.txt, 1), (d5.txt, 1), (d6.txt, 5), (d7.txt, 14), (d9.txt, 75)}
+        frequencies = sorted(current_term_counter.iteritems(), key=lambda f: f[0])
+        #formating as in task
+        frequencies_str = ', '.join(['({}, {})'.format(*f) for f in frequencies])
+        num_docs = len(current_term_counter)
+        print "{0} : {1} : {{{2}}}".format(current_term, num_docs, frequencies_str)
+
+for line in sys.stdin:
+    #freqs_json -> frequencies like  {"d1.txt": 5, "d2.txt": 8}
+    term, freqs_json = line.split("\t", 1)
+    #assume that we have only ascii anyway
+    #so u'cat' == 'cat'
+    counter = Counter(json.loads(freqs_json))
+
+    if term != current_term:
+        print_current()
+        #clear everything for the next term
+        current_term = term.strip()
+        current_term_counter.clear()
+
+    current_term_counter += counter
+
+#print the last term
+print_current()
+reducer.py code end
+
+Task 1 code end
+
+Task 2 code begin
+
+mapper.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+from math import log10
+
+#it is said that it is fine to hard-code  total number of documents in one place
+#"""For tf-idf, you can hard-code N. But please hard-code it in only one place."""
+total_num_docs = 17.0
+target_d = "d1.txt"
+terms = set()
+
+#It is said that terms.txt is small enough to be held in memory (only 7 terms)
+#For the same reason I am using only 1 reducer, as it will receive only 7 lines
+for t in file('terms.txt'):
+    terms.add(t.strip())
+#as we are using input from task
+#each term in the inverted index must be unique
+
+for line in sys.stdin:
+    #print line
+    t, num_docs, freqs_str = re.split(r"\s+:\s+", line)
+    t, num_docs, freqs_str = t.strip(), int(num_docs), freqs_str.strip()
+
+    if t not in terms:
+        continue
+
+    freqs = re.findall(r"\(([\w\d\.]+?),\s*(\d+)\)", freqs_str)
+    tf = next((float(f) for d, f in freqs if d == target_d), 0.0)
+    idf = log10(total_num_docs / (1.0 + num_docs))
+    print '{0}\t{1}'.format(t, tf * idf)
+mapper.py code end
+
+reducer.py code begin
+
+#!/usr/bin/python
+import sys
+from collections import Counter
+
+#have to create reducer in order to outprint 0.0 for electronic
+target_d = "d1.txt"
+counter = Counter()
+
+for line in sys.stdin:
+    #each term is unique as we are using output from task 1
+    term, tf_idf = line.split("\t")
+    term, tf_idf = term.strip(), float(tf_idf)
+    counter[term] = tf_idf
+
+#It is said that terms.txt is small enough to be held in memory (only 7 terms)
+#For the same reason I am using only 1 reducer, as it will receive only 7 lines
+for t in file('terms.txt'):
+    t = t.strip()
+    tf_idf = float(counter[t])
+    print "{}, {} = {}".format(t, target_d, tf_idf)
+
+reducer.py code end
+
+Task 2 code end
+
+Task 3.1 code begin
+
+mapper.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+
+for line in sys.stdin:
+    match = re.search(r'".*?\s+(.+?)(?:\s+.+?"|")', line)
+    #there are broken lines like this one
+    #k7us70a.krhm.jvc-victor.co.jp - - [06/Aug/1995
+    #so taking counter measures
+    if match:
+        url = match.group(1)
+        print "{}\t{}".format(url, 1)
+
+mapper.py code end
+
+combiner.py code begin
+
+#!/usr/bin/python
+import sys
+
+#on combiner I am only counting instead of storing top 10 in the heap
+#because the host_name is not unique in the log file. Therefore, the
+#same host can appear in different mapper/combiner. Imagine situation
+#where on each mapper you have a host which is only 21st on each particular
+#mapper/combiner but if you assemble it from all the instances it may be potentially
+#the first one!!
+
+current_count = 0
+current_url = None
+
+def print_current():
+    if current_url is not None:
+        print "{}\t{}".format(current_url, current_count)
+
+for line in sys.stdin:
+    url, count = line.split('\t')
+    count = int(count)
+    if current_url != url:
+        print_current()
+        current_url = url
+        current_count = count
+    else:
+        current_count += count
+#don't forget the last entry
+print_current()combiner.py code end
+
+reducer.py code begin
+
+#!/usr/bin/python
+import sys
+
+#the final number of potential popular urls will be equal to the number of reducer
+#so I finnally get most one url via awk script
+
+best = [None, 0]
+current = [None, 0]
+
+for line in sys.stdin:
+    url, count = line.split('\t')
+    count = int(count)
+    if current[0] != url:
+        best = max([best, current], key=lambda x:x[1])
+        current = [url, count]
+    else:
+        current[1] += count
+#don't forget the last entry
+best = max([best, current], key=lambda x:x[1])
+print "{}\t{}".format(best[0], best[1])
+reducer.py code end
+
+Task 3.1 code end
+
+Task 3.2 code begin
+
+mapper.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+
+for line in sys.stdin:
+    host, rest = line.split(" - - ")
+    match = re.search(r'"\s+404\s+', rest)
+    #there are broken lines like this one
+    #k7us70a.krhm.jvc-victor.co.jp - - [06/Aug/1995
+    #so taking counter measures
+    if match:
+        print "{}\t{}".format(host, 1)
+
+mapper.py code end
+
+combiner.py code begin
+
+#!/usr/bin/python
+import sys
+
+#on combiner I am only counting instead of storing top 10 in the heap
+#because the host_name is not unique in the log file. Therefore, the
+#same host can appear in different mapper/combiner. Imagine situation
+#where on each mapper you have a host which is only 21st on each particular
+#mapper/combiner but if you assemble it from all the instances it may be potentially
+#the first one!!
+
+current_count = 0
+current_host = None
+
+def print_current():
+    if current_host is not None:
+        print "{}\t{}".format(current_host, current_count)
+
+for line in sys.stdin:
+    host, count = line.split('\t')
+    count = int(count)
+    if current_host != host:
+        print_current()
+        current_host = host
+        current_count = count
+    else:
+        current_count += count
+#don't forget the last entry
+print_current()combiner.py code end
+
+reducer.py code begin
+
+#!/usr/bin/python
+import sys
+import heapq
+from operator import itemgetter
+
+#using heap to collect top ones
+N = 10
+top_hosts = [(0, None)] * N
+heapq.heapify(top_hosts)
+
+current_count = 0
+current_host = None
+
+for line in sys.stdin:
+    host, count = line.split('\t')
+    count = int(count)
+    if current_host != host:
+        heapq.heappushpop(top_hosts, (current_count, current_host))
+        current_host = host
+        current_count = count
+    else:
+        current_count += count
+#don't forget the last entry
+heapq.heappushpop(top_hosts, (current_count, current_host))
+#clean from initial None entries if any of them are left
+top_hosts = filter(lambda x: x[1] is not None, top_hosts)
+top_hosts = sorted(top_hosts, key=itemgetter(0), reverse=True)
+for count, host in top_hosts:
+    print "{}\t{}".format(host, count)reducer.py code end
+
+Task 3.2 code end
+
+Task 3.3 code begin
+
+mapper.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+from datetime import datetime as dt
+
+#Instead of secondary sorting I output
+#host, first_time, last_time, is_unique
+#which allows me to do kind of fast bubble sorting on
+#first_time and last_tiem field via min and max.
+#The advantage of this approach that it allows
+#to use combiners, so you can produce only best
+#approximation so far per one host via combiners.
+
+#epoch: 1st January 1970
+epoch = dt.utcfromtimestamp(0)
+
+for line in sys.stdin:
+    host, rest = line.split(" - - ")
+    match = re.search(r'\[(.+?)\s+.+?]', rest)
+    #there are broken lines like this one
+    #k7us70a.krhm.jvc-victor.co.jp - - [06/Aug/1995
+    #so taking counter measures
+    if match:
+        request_time = dt.strptime(match.group(1),'%d/%b/%Y:%H:%M:%S')
+        seconds = (request_time - epoch).total_seconds()
+        seconds = int(seconds)
+        #is_inique to distinguish cases when person visited several URL
+        #but at the same time, so it has 0 time difference. In contrast for
+        #person who asked only for one URL we should output timestamp of the visit
+        #(based on the prof. Kenneth answer that we should treat each entry to the server
+        #as separate visit)
+        #is_inique: 0 - False, 1 - True
+        #host, first_time, last_time, is_unique
+        print "{}\t{}\t{}\t{}".format(host.strip(), seconds, seconds, 1)mapper.py code end
+
+combiner.py code begin
+
+#!/usr/bin/python
+import sys
+cur_host = None
+cur_first_time = float('inf')
+cur_last_time = -1
+cur_unique = None
+
+def print_first_last():
+    if cur_host is not None:
+        print "{}\t{}\t{}\t{}".format(cur_host, cur_first_time, cur_last_time, cur_unique)
+
+#lines are sorted by host
+for line in sys.stdin:
+    line = line.strip()
+    host, first_time, last_time, unique = line.split("\t")
+    host = host.strip()
+    first_time, last_time, unique = int(first_time), int(last_time), int(unique)
+
+    if cur_host != host:
+        print_first_last()
+        cur_host = host
+        cur_first_time = first_time
+        cur_last_time  = last_time
+        cur_unique =  unique
+    else:
+        cur_unique = 0
+
+
+    cur_first_time = min(first_time, cur_first_time)
+    cur_last_time  = max(last_time,  cur_last_time)
+
+#don't forget the last entry
+print_first_last()combiner.py code end
+
+reducer.py code begin
+
+#!/usr/bin/python
+import sys
+from datetime import datetime, timedelta
+
+cur_host = None
+cur_first_time = float('inf')
+cur_last_time = -1
+cur_unique = None
+
+def print_time_mark():
+    if cur_host is None:
+        return
+    if cur_unique == 1:
+        #something like
+        #1995-08-06 11:28:30
+        #just time mark
+        result = str(datetime.utcfromtimestamp(cur_first_time))
+    else:
+        #[days], hh:mm:ss
+        result = "{:0>8}".format(timedelta(seconds=(cur_last_time - cur_first_time)))
+    print "{}\t{}".format(cur_host, result)
+
+#lines are sorted by host and seconds
+for line in sys.stdin:
+    line = line.strip()
+    host, first_time, last_time, unique = line.split("\t")
+    host = host.strip()
+    first_time, last_time, unique = int(first_time), int(last_time), int(unique)
+
+    if cur_host != host:
+        print_time_mark()
+        cur_host = host
+        cur_first_time = first_time
+        cur_last_time  = last_time
+        cur_unique = unique
+    else:
+        cur_unique = 0
+
+    cur_first_time = min(first_time, cur_first_time)
+    cur_last_time  = max(last_time,  cur_last_time)
+
+#don't forget the last entry
+print_time_mark()reducer.py code end
+
+Task 3.3 code end
+
+Task 4.1 code begin
+
+mapper.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+import heapq
+
+N = 10
+top_questions = [(0, None)] * N
+heapq.heapify(top_questions)
+
+#post id must be unique key, so we can the staff on mapper
+#as we are not afraid that it will appear somewhere else
+
+for line in sys.stdin:
+    pairs = re.findall(r'\s+([^\s]+)="([^"]+)"', line)
+    post = dict(pairs)
+    #question
+    if post["PostTypeId"] == "1":
+        view_count = int(post["ViewCount"])
+        heapq.heappushpop(top_questions, (view_count, post["Id"]))
+
+#clean from initial None entries if any of them are left
+top_questions = filter(lambda x: x[1] is not None, top_questions)
+for view_count, post_id in top_questions:
+    print "{}\t{}".format(post_id, view_count)
+
+mapper.py code end
+
+reducer.py code begin
+
+#!/usr/bin/python
+import sys
+import heapq
+
+N = 10
+top_questions = [(0, None)] * N
+heapq.heapify(top_questions)
+
+for line in sys.stdin:
+    line = line.strip()
+    post_id, view_count = line.split('\t')
+    view_count = int(view_count)
+    heapq.heappushpop(top_questions, (view_count, post_id))
+
+#clean from initial None entries if any of them potentailly exist (not in this task I guess)
+top_questions = filter(lambda x: x[1] is not None, top_questions)
+for view_count, post_id in top_questions:
+    print "{},\t{}".format(post_id, view_count)reducer.py code end
+
+Task 4.1 code end
+
+Task 4.2 code begin
+
+mapper1.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+
+#here I account that if the person answered on the same question
+#multiple times then I acknowledge each such answer as separate answer.
+#Because it is unclear from the task whether I should account it or not.
+#There is no such problems with accepted answer though.
+#Moreover, in our dataset, it seems that both approaches produce the same result. But
+#in general case they should be different ones.
+#In case, of other interpretation (if I should account only one answer for the same question from the same person)
+#then I would just add another MapReduce job before this one (so we can call it job0) and make reduce side join
+#on ParentId to exclude repetitions (I do something like that in the next task).
+
+#The persons could have a significant amount of answers (~20K).
+#So determining who has the most answers on reducer side  and keeping all the answers
+#at the same time will require approximately number_of_reducers * average_number_of_answers memory.
+#So I use several map reduce jobs. Finding the person with most answers in the first pass and
+#projecting all the answers of this person in the second job.
+
+
+for line in sys.stdin:
+    pairs = re.findall(r'\s+([^\s]+)="([^"]+)"', line)
+    post = dict(pairs)
+    if "OwnerUserId" not in post:
+        continue
+    if post["PostTypeId"] == "2":
+        owner_id = post["OwnerUserId"]
+        print "{}\t{}".format(owner_id, 1)mapper1.py code end
+
+combiner1.py code begin
+
+#!/usr/bin/python
+import sys
+
+
+current_count = 0
+current_owner_id = None
+
+def print_current():
+    if current_owner_id is not None:
+        print "{}\t{}".format(current_owner_id, current_count)
+
+for line in sys.stdin:
+    owner_id, count = line.split('\t')
+    count = int(count)
+    if current_owner_id != owner_id:
+        print_current()
+        current_owner_id = owner_id
+        current_count = count
+    else:
+        current_count += count
+#don't forget the last entry
+print_current()combiner1.py code end
+
+reducer1.py code begin
+
+#!/usr/bin/python
+import sys
+
+best = [None, 0]
+current = [None, 0]
+
+for line in sys.stdin:
+    owner_id, count = line.split('\t')
+    count = int(count)
+    if current[0] != owner_id:
+        best = max([best, current], key=lambda x:x[1])
+        current = [owner_id, count]
+    else:
+        current[1] += count
+#don't forget the last entry
+best = max([best, current], key=lambda x:x[1])
+print "{}\t{}".format(best[0], best[1])
+reducer1.py code end
+
+mapper2.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+
+max_owner_id = None
+for line in file('max_user.txt'):
+    max_owner_id, rest = line.strip().split()
+    break
+
+for line in sys.stdin:
+    pairs = re.findall(r'\s+([^\s]+)="([^"]+)"', line)
+    post = dict(pairs)
+    if "OwnerUserId" not in post:
+        continue
+    if post["PostTypeId"] == "2" and post["OwnerUserId"] == max_owner_id:
+        parent_id = post["ParentId"]
+        print parent_idmapper2.py code end
+
+reducer2.py code begin
+
+#!/usr/bin/python
+import sys
+
+#I use only one reducer because it will receive output only
+#from one person (around 2K which is affordable to do in one reducer)
+
+for line in file('max_user.txt'):
+    max_owner_id, rest = line.strip().split()
+    sys.stdout.write("{0} -->".format(max_owner_id))
+    break
+
+curr_parent_id = None
+first_one = True
+
+def print_current():
+    if curr_parent_id is None:
+        return True
+    if first_one:
+        sys.stdout.write(" {0}".format(curr_parent_id))
+    else:
+        sys.stdout.write(", {0}".format(curr_parent_id))
+    return False
+
+for line in sys.stdin:
+    parent_id = line.strip()
+    #ensure uniqueness
+    if curr_parent_id != parent_id:
+        first_one = print_current()
+        curr_parent_id = parent_id
+
+#print the last one
+print_current()reducer2.py code end
+
+Task 4.2 code end
+
+Task 4.3 code begin
+
+mapper0.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+
+#perform reducer side join on accepted answer id and answer id
+for line in sys.stdin:
+    pairs = re.findall(r'\s+([^\s]+)="([^"]+)"', line)
+    post = dict(pairs)
+    if post["PostTypeId"] == "1":
+        #question
+        if "AcceptedAnswerId" not in post:
+            continue
+        accepted_id = post["AcceptedAnswerId"]
+        print "{}\t{}\tEmpty".format(accepted_id, post["PostTypeId"])
+    if post["PostTypeId"] == "2":
+        #answer
+        if "OwnerUserId" not in post:
+            continue
+        owner_id = post["OwnerUserId"]
+        post_id  = post["Id"]
+        print "{}\t{}\t{}".format(post_id, post["PostTypeId"], owner_id)
+
+mapper0.py code end
+
+reducer0.py code begin
+
+#!/usr/bin/python
+import sys
+
+curr_ans_id = None
+is_accepted = False
+
+#the pair of accepted answer and owner_id is alway unique
+
+for line in sys.stdin: # For every line in the input from stdin
+    ans_id, post_type_id, rest = line.strip().split('\t')
+    is_new_id = curr_ans_id != ans_id
+    if is_new_id:
+        curr_ans_id = ans_id
+        is_accepted = post_type_id == "1"
+        #there is no need to print new accepted line
+        #and there is no need to print reject point
+        continue
+
+    if is_accepted:
+        owner_id = rest
+        print "{}\t{}".format(owner_id, curr_ans_id)
+
+
+
+reducer0.py code end
+
+mapper1.py code begin
+
+#!/usr/bin/python
+import sys
+
+for line in sys.stdin:
+    line = line.strip()
+    owner_id, ans_id = line.split()
+    print "{}\t{}".format(owner_id, 1)mapper1.py code end
+
+combiner1.py code begin
+
+#!/usr/bin/python
+import sys
+
+
+current_count = 0
+current_owner_id = None
+
+def print_current():
+    if current_owner_id is not None:
+        print "{}\t{}".format(current_owner_id, current_count)
+
+for line in sys.stdin:
+    owner_id, count = line.split('\t')
+    count = int(count)
+    if current_owner_id != owner_id:
+        print_current()
+        current_owner_id = owner_id
+        current_count = count
+    else:
+        current_count += count
+#don't forget the last entry
+print_current()combiner1.py code end
+
+reducer1.py code begin
+
+#!/usr/bin/python
+import sys
+
+best = [None, 0]
+current = [None, 0]
+
+for line in sys.stdin:
+    owner_id, count = line.split('\t')
+    count = int(count)
+    if current[0] != owner_id:
+        best = max([best, current], key=lambda x:x[1])
+        current = [owner_id, count]
+    else:
+        current[1] += count
+#don't forget the last entry
+best = max([best, current], key=lambda x:x[1])
+print "{}\t{}".format(best[0], best[1])
+reducer1.py code end
+
+mapper2.py code begin
+
+#!/usr/bin/python
+import sys
+import re
+
+max_owner_id = None
+for line in file('max_user.txt'):
+    max_owner_id, rest = line.strip().split()
+    break
+
+for line in sys.stdin:
+    line = line.strip()
+    owner_id, ans_id = line.split()
+    if owner_id == max_owner_id:
+        print ans_idmapper2.py code end
+
+reducer2.py code begin
+
+#!/usr/bin/python
+import sys
+
+for line in file('max_user.txt'):
+    max_owner_id, total_count = line.strip().split()
+    sys.stdout.write("{0} --> {1}, ".format(max_owner_id, total_count))
+    break
+
+curr_ans_id = None
+first_one = True
+
+def print_current():
+    if curr_ans_id is None:
+        return True
+    if first_one:
+        sys.stdout.write(" {0}".format(curr_ans_id))
+    else:
+        sys.stdout.write(", {0}".format(curr_ans_id))
+    return False
+
+for line in sys.stdin:
+    ans_id = line.strip()
+    #ensure uniqueness
+    if curr_ans_id != ans_id:
+        first_one = print_current()
+        curr_ans_id = ans_id
+
+#print the last one
+print_current()reducer2.py code end
+
+Task 4.3 code end
+

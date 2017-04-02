@@ -1,0 +1,1 @@
+hadoop jar /opt/hadoop/hadoop-2.7.1/share/hadoop/tools/lib/hadoop-streaming-2.7.1.jar -input /user/$USER/data/output/ex1/s1569105_task_2.out -output /user/$USER/data/output/ex1/s1569105_task_5.out -mapper mapper.py -reducer reducer.py -combiner combiner.py -file combiner.py  -file mapper.py -file reducer.py -jobconf mapred.reduce.tasks=2 -jobconf mapred.job.name="kuddai job"

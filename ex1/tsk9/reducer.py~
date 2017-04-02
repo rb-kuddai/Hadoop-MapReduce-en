@@ -1,0 +1,26 @@
+#!/usr/bin/python
+import sys
+lowest_avg_score = None
+eps = 0.000001
+students = []#students with the same lowest score for more than 5 subjects
+
+# from http://stackoverflow.com/questions/4028889/floating-point-equality-in-python
+def approx_equal(a, b, tol):
+     return abs(a - b) < tol
+
+for line in sys.stdin: # For every line in the input from stdin
+    raw_avg_score, name = line.split("\t", 1)
+    name = name.strip()
+    avg_score = float(raw_avg_score)
+
+    if lowest_avg_score is None or avg_score < lowest_avg_score:
+        #new lowest score - remove all previous records
+        students[:] = []
+        lowest_avg_score = avg_score
+
+    if approx_equal(avg_score, lowest_avg_score, eps):
+        students.append(name)
+
+if lowest_avg_score is not None:
+    print "{0} with {1}".format(" ".join(students), lowest_avg_score)
+
